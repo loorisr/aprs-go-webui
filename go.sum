@@ -1,0 +1,4 @@
+github.com/coder/websocket v1.8.14 h1:9L0p0iKiNOibykf283eHkKUHHrpG7f65OE3BhhO7v9g=
+github.com/coder/websocket v1.8.14/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
+github.com/hessu/go-aprs-fap v0.0.12 h1:CPYcsm52k8iiCmN8/mKGbdBF7OV7aC9Cg8SoaeaGgeE=
+github.com/hessu/go-aprs-fap v0.0.12/go.mod h1:ijCZO2LBfaOgvcCjmV086Z3ku8dVh7lH40IXiARWmuM=

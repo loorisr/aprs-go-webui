@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>APRS Go Map</title>
+<script src="/lib/maplibre-gl.js"></script>
+<link href="/lib/maplibre-gl.css" rel="stylesheet">
+<script src="/lib/pmtiles.js"></script>
+<script src="/lib/basemaps.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body, #map { width: 100%; height: 100%; }
+  #map { background: #f8f4f0; }
+
+  #sidebar {
+    position: absolute; top: 10px; right: 10px;
+    background: rgba(255, 255, 255, 0.94); color: #333;
+    border-radius: 8px; padding: 10px 14px;
+    font-family: 'Courier New', monospace; font-size: 12px;
+    z-index: 10;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+  }
+  #sidebar h3 { margin: 0 0 4px 0; font-size: 13px; color: #3366cc; }
+  #stats { display: flex; gap: 12px; }
+  #stats .stat { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+  #stats .stat .val { color: #229933; font-weight: bold; }
+
+  #toggle-pkts {
+    cursor: pointer; border: 1px solid #ccc; border-radius: 4px;
+    padding: 2px 6px; font-size: 10px; background: #f0f0f0;
+    user-select: none; white-space: nowrap;
+  }
+  #toggle-pkts:hover { background: #e0e0e0; }
+
+  #packet-drawer {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    z-index: 11; border-top: 1px solid #ccc;
+    background: rgba(255, 255, 255, 0.96);
+    font-family: 'Courier New', monospace; font-size: 11px;
+    box-shadow: 0 -2px 12px rgba(0,0,0,0.12);
+    transition: transform 0.2s ease;
+    transform: translateY(calc(100% - 28px));
+  }
+  #packet-drawer.open {
+    transform: translateY(0);
+  }
+  #drawer-tab {
+    height: 28px; display: flex; align-items: center; justify-content: center;
+    cursor: pointer; user-select: none; background: #e8e8e8;
+    font-weight: bold; font-size: 11px; color: #555;
+  }
+  #drawer-tab:hover { background: #d8d8d8; }
+  #drawer-body {
+    height: 260px; overflow-y: auto;
+    border-top: 1px solid #ddd;
+  }
+
+  #pkt-table {
+    width: 100%; border-collapse: collapse;
+    font-size: 10px; table-layout: fixed;
+  }
+  #pkt-table thead { position: sticky; top: 0; z-index: 1; }
+  #pkt-table th {
+    background: #e8e8e8; padding: 3px 4px; text-align: left;
+    font-weight: bold; border-bottom: 2px solid #ccc;
+    font-size: 9px; color: #555;
+  }
+  #pkt-table td { padding: 2px 4px; border-bottom: 1px solid #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #pkt-table tr.data-row { cursor: pointer; }
+  #pkt-table tr.data-row:hover { background: #f0f8ff; }
+  #pkt-table tr.data-row.expanded { background: #e8f0ff; }
+  #pkt-table td.col-type { width: 38px; text-align: center; }
+  #pkt-table td.col-src { width: 80px; font-weight: bold; }
+  #pkt-table td.col-dst { width: 80px; }
+  #pkt-table td.col-lat { width: 70px; text-align: center; }
+  #pkt-table td.col-lon { width: 70px; text-align: center; }
+  #pkt-table td.col-sym { width: 36px; }
+  #pkt-table td.col-cmt { width: auto; }
+  #pkt-table td.col-time { width: 70px; text-align: right; }
+
+  .type-badge {
+    font-size: 8px; padding: 1px 4px; border-radius: 3px;
+    font-weight: bold; white-space: nowrap; display: inline-block;
+  }
+  .type-badge.pos { background: #c8f0c8; color: #1a661a; }
+  .type-badge.msg { background: #ffe0b2; color: #8a5300; }
+  .type-badge.sts { background: #d0d0ff; color: #3030aa; }
+  .type-badge.wxr { background: #b3e5fc; color: #01579b; }
+  .type-badge.tlm { background: #f0e0f0; color: #6a1b6a; }
+  .type-badge.obj { background: #ffe0e0; color: #8b0000; }
+  .type-badge.unk { background: #e0e0e0; color: #555; }
+
+  tr.detail-row { display: none; }
+  tr.data-row.expanded + tr.detail-row { display: table-row; }
+  tr.detail-row td {
+    padding: 6px 8px; background: #fafafa; white-space: pre-wrap;
+    font-size: 10px; line-height: 1.45; border-bottom: 2px solid #ddd;
+    word-break: break-all; max-width: 0;
+  }
+
+  .maplibregl-popup-content {
+    background: rgba(255, 255, 255, 0.95); color: #333;
+    font-family: 'Courier New', monospace; font-size: 12px;
+    border-radius: 6px; padding: 8px 12px; max-width: 300px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+  }
+  .maplibregl-popup-tip { border-top-color: rgba(255, 255, 255, 0.95) !important; }
+  .maplibregl-popup-close-button { color: #666; font-size: 16px; }
+  .popup-row { margin: 2px 0; }
+  .popup-label { color: #888; }
+  .popup-val { color: #336699; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="sidebar">
+  <h3>APRS Go Map</h3>
+  <div id="stats">
+    <div class="stat"><span>Stations:</span><span class="val" id="station-count">0</span></div>
+    <div class="stat"><span>Packets:</span><span class="val" id="packet-count">0</span></div>
+    <div class="stat"><span>Status:</span><span class="val" id="conn-status">connecting</span></div>
+    <span id="toggle-pkts" onclick="togglePacketList()">Packets</span>
+  </div>
+</div>
+<div id="packet-drawer">
+  <div id="drawer-tab" onclick="togglePacketList()">Packets (0)</div>
+  <div id="drawer-body">
+    <table id="pkt-table">
+      <thead><tr>
+        <th class="col-type">Type</th>
+        <th class="col-src">Src</th>
+        <th class="col-dst">Dst</th>
+        <th class="col-lat">Lat</th>
+        <th class="col-lon">Lon</th>
+        <th class="col-sym">Sym</th>
+        <th class="col-cmt">Comment</th>
+        <th class="col-time">Time</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const API = {
+  async config() {
+    const resp = await fetch('/api/config');
+    return resp.json();
+  }
+};
+
+const SYMBOL_COLORS = {
+  vehicle: '#3388ff',
+  house: '#ff8c42',
+  aircraft: '#ff4444',
+  boat: '#00ccff',
+  digi: '#ffdd44',
+  wx: '#44ff44',
+  default: '#66ccff'
+};
+
+function getColor(symbol) {
+  if (!symbol || symbol.length < 2) return SYMBOL_COLORS.default;
+  const c = symbol[1];
+  if ('/>bjuvVyYPR'.includes(c)) return SYMBOL_COLORS.vehicle;
+  if ('-#=^O'.includes(c)) return SYMBOL_COLORS.house;
+  if ('/\\XgIm'.includes(c)) return SYMBOL_COLORS.aircraft;
+  if ('aYsSfkKMB'.includes(c)) return SYMBOL_COLORS.boat;
+  if ('#*&'.includes(symbol[0]) || c === '#') return SYMBOL_COLORS.digi;
+  if ('_WwU'.includes(c)) return SYMBOL_COLORS.wx;
+  return SYMBOL_COLORS.default;
+}
+
+let packetCount = 0;
+let stations = {};
+let stationSource = null;
+let packetsVisible = false;
+let packetLimit = 200;
+
+let aprsMap = null;
+let aprsTables = [null, null, null];
+
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+async function preloadSymbolTables() {
+  try {
+    aprsTables[0] = await loadImage('/symbols/aprs-symbols-24-0.png');
+    aprsTables[1] = await loadImage('/symbols/aprs-symbols-24-1.png');
+    aprsTables[2] = await loadImage('/symbols/aprs-symbols-24-2.png');
+  } catch (e) {
+    console.warn('APRS symbol tables not loaded:', e);
+  }
+}
+
+function tableIndexForSymbol(sym) {
+  if (!sym || sym.length < 1) return -1;
+  const t = sym[0];
+  if (t === '/') return 0;
+  if (t === '\\') return 1;
+  return 2;
+}
+
+function iconCoords(sym) {
+  const idx = sym.charCodeAt(1) - 33;
+  if (idx < 0 || idx >= 96) return null;
+  return { col: idx % 16, row: Math.floor(idx / 16) };
+}
+
+function iconName(sym) {
+  return 'aprs_' + sym.charCodeAt(0) + '_' + sym.charCodeAt(1);
+}
+
+async function ensureIcon(sym) {
+  if (!aprsMap || !sym || sym.length < 2) return null;
+  const name = iconName(sym);
+  if (aprsMap.hasImage(name)) return name;
+
+  const ti = tableIndexForSymbol(sym);
+  if (ti < 0 || !aprsTables[ti]) return null;
+  const pos = iconCoords(sym);
+  if (!pos) return null;
+
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 24;
+    canvas.height = 24;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(aprsTables[ti], pos.col * 24, pos.row * 24, 24, 24, 0, 0, 24, 24);
+
+    const bitmap = await createImageBitmap(canvas);
+    aprsMap.addImage(name, bitmap);
+    return name;
+  } catch (e) {
+    console.warn('ensureIcon failed for', sym, e);
+    return null;
+  }
+}
+
+function updateSidebar() {
+  document.getElementById('station-count').textContent = Object.keys(stations).length;
+  document.getElementById('packet-count').textContent = packetCount;
+  document.getElementById('drawer-tab').textContent = 'Packets (' + packetCount + ')';
+}
+
+function updateStationSource() {
+  if (!stationSource) return;
+  const features = Object.values(stations).map(s => {
+    const props = {
+      callsign: s.src,
+      symbol: s.symbol || '',
+      comment: s.comment || '',
+      time: s.time,
+      color: getColor(s.symbol)
+    };
+    if (s.symbol && aprsMap && aprsMap.hasImage(iconName(s.symbol))) {
+      props.iconName = iconName(s.symbol);
+    }
+    return {
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
+      properties: props
+    };
+  });
+  stationSource.setData({ type: 'FeatureCollection', features });
+}
+
+function purgeStale() {
+  const cutoff = Date.now() / 1000 - 1800;
+  let changed = false;
+  for (const k in stations) {
+    if (stations[k].time < cutoff) {
+      delete stations[k];
+      changed = true;
+    }
+  }
+  if (changed) updateStationSource();
+}
+
+function togglePacketList() {
+  packetsVisible = !packetsVisible;
+  const drawer = document.getElementById('packet-drawer');
+  if (packetsVisible) {
+    drawer.classList.add('open');
+    scrollToLatest();
+  } else {
+    drawer.classList.remove('open');
+  }
+}
+
+function typeBadge(pkt) {
+  const t = (pkt.type || '').toLowerCase();
+  if (t.includes('position') || t.includes('mic')) return ['pos','POS'];
+  if (t.includes('message')) return ['msg','MSG'];
+  if (t.includes('status')) return ['sts','STS'];
+  if (t.includes('weather') || t.includes('wx')) return ['wxr','WX'];
+  if (t.includes('telemetry')) return ['tlm','TLM'];
+  if (t.includes('object') || t.includes('item')) return ['obj','OBJ'];
+  return ['unk', (pkt.type || '???').substring(0,3).toUpperCase()];
+}
+
+function formatTime(unix) {
+  const d = new Date(unix * 1000);
+  return d.toLocaleTimeString();
+}
+
+function buildDetail(pkt) {
+  let lines = [];
+  lines.push('RAW: ' + pkt.raw);
+  lines.push('──────────────────────────────');
+  lines.push('Source:      ' + pkt.src);
+  if (pkt.dst) lines.push('Dest:        ' + pkt.dst);
+  if (pkt.type) lines.push('Type:        ' + pkt.type);
+  if (pkt.hasPos) {
+    lines.push('Lat:         ' + pkt.lat.toFixed(5));
+    lines.push('Lon:         ' + pkt.lon.toFixed(5));
+  }
+  if (pkt.symbol) lines.push('Symbol:      ' + pkt.symbol);
+  if (pkt.comment) lines.push('Comment:     ' + pkt.comment);
+  if (pkt.status) lines.push('Status:      ' + pkt.status);
+  if (pkt.message) lines.push('Message:     ' + pkt.message);
+  if (pkt.speed) lines.push('Speed:       ' + pkt.speed.toFixed(1) + ' km/h');
+  if (pkt.course) lines.push('Course:      ' + pkt.course + '\u00b0');
+  if (pkt.altitude) lines.push('Altitude:    ' + pkt.altitude.toFixed(0) + ' m');
+  return lines.join('\n');
+}
+
+function addPacket(pkt) {
+  const tbody = document.querySelector('#pkt-table tbody');
+  if (!packetsVisible && tbody.children.length / 2 > packetLimit) return;
+  if (tbody.children.length / 2 >= packetLimit) {
+    tbody.removeChild(tbody.firstChild); // remove data row
+    tbody.removeChild(tbody.firstChild); // remove detail row
+  }
+
+  const [cssClass, label] = typeBadge(pkt);
+  const hasPos = pkt.hasPos;
+
+  const dataRow = document.createElement('tr');
+  dataRow.className = 'data-row';
+  dataRow.innerHTML =
+    '<td class="col-type"><span class="type-badge ' + cssClass + '">' + label + '</span></td>' +
+    '<td class="col-src">' + esc(pkt.src) + '</td>' +
+    '<td class="col-dst">' + esc(pkt.dst) + '</td>' +
+    '<td class="col-lat">' + (hasPos ? pkt.lat.toFixed(4) : '-') + '</td>' +
+    '<td class="col-lon">' + (hasPos ? pkt.lon.toFixed(4) : '-') + '</td>' +
+    '<td class="col-sym">' + esc(pkt.symbol) + '</td>' +
+    '<td class="col-cmt">' + esc(pkt.comment) + '</td>' +
+    '<td class="col-time">' + formatTime(pkt.time) + '</td>';
+
+  const detailRow = document.createElement('tr');
+  detailRow.className = 'detail-row';
+  detailRow.innerHTML = '<td colspan="8">' + buildDetail(pkt) + '</td>';
+
+  dataRow.addEventListener('click', function(e) {
+    e.stopPropagation();
+    this.classList.toggle('expanded');
+  });
+
+  tbody.appendChild(dataRow);
+  tbody.appendChild(detailRow);
+}
+
+function esc(s) { return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function scrollToLatest() {
+  const body = document.getElementById('drawer-body');
+  setTimeout(() => { body.scrollTop = body.scrollHeight; }, 50);
+}
+
+async function init() {
+  const config = await API.config();
+  await preloadSymbolTables();
+
+  let style;
+  if (config.hasPMTiles) {
+    const protocol = new pmtiles.Protocol();
+    maplibregl.addProtocol('pmtiles', protocol.tile);
+    style = buildVectorStyle('pmtiles://' + config.pmtilesUrl, location.origin);
+  } else {
+    style = buildRasterStyle();
+  }
+
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: style,
+    center: [0, 30],
+    zoom: 2,
+    attributionControl: false
+  });
+
+  map.addControl(new maplibregl.NavigationControl(), 'bottom-right');
+
+  map.on('load', () => {
+    map.addSource('stations', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    });
+    stationSource = map.getSource('stations');
+    aprsMap = map;
+
+    map.addLayer({
+      id: 'stations-circles',
+      type: 'circle',
+      source: 'stations',
+      filter: ['!', ['has', 'iconName']],
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 2, 2.5, 6, 5, 12, 10],
+        'circle-color': ['get', 'color'],
+        'circle-stroke-width': 1.5,
+        'circle-stroke-color': '#fff',
+        'circle-opacity': 0.85
+      }
+    });
+
+    map.addLayer({
+      id: 'stations-icons',
+      type: 'symbol',
+      source: 'stations',
+      filter: ['has', 'iconName'],
+      layout: {
+        'icon-image': ['get', 'iconName'],
+        'icon-allow-overlap': true,
+        'icon-size': 1
+      }
+    });
+
+    map.addLayer({
+      id: 'stations-labels',
+      type: 'symbol',
+      source: 'stations',
+      layout: {
+        'text-field': ['get', 'callsign'],
+        'text-offset': [0, 1.6],
+        'text-size': 10,
+        'text-anchor': 'top',
+        'text-font': ['Noto Sans Regular']
+      },
+      paint: {
+        'text-color': '#fff',
+        'text-halo-color': '#000',
+        'text-halo-width': 1.5,
+        'text-opacity': ['interpolate', ['linear'], ['zoom'], 5, 0, 8, 0.3, 10, 0.7]
+      }
+    });
+
+    map.on('click', 'stations-circles', openPopup);
+    map.on('click', 'stations-icons', openPopup);
+
+    map.on('mouseenter', 'stations-circles', () => map.getCanvas().style.cursor = 'pointer');
+    map.on('mouseenter', 'stations-icons', () => map.getCanvas().style.cursor = 'pointer');
+    map.on('mouseleave', 'stations-circles', () => map.getCanvas().style.cursor = '');
+    map.on('mouseleave', 'stations-icons', () => map.getCanvas().style.cursor = '');
+  });
+
+  function openPopup(e) {
+    const props = e.features[0].properties;
+    const coords = e.features[0].geometry.coordinates.slice();
+    new maplibregl.Popup()
+      .setLngLat(coords)
+      .setHTML(
+        '<div class="popup-row"><span class="popup-label">Callsign:</span> <span class="popup-val">' + props.callsign + '</span></div>' +
+        (props.comment ? '<div class="popup-row"><span class="popup-label">Comment:</span> <span class="popup-val">' + props.comment + '</span></div>' : '') +
+        '<div class="popup-row"><span class="popup-label">Symbol:</span> <span class="popup-val">' + (props.symbol || '-') + '</span></div>'
+      )
+      .addTo(aprsMap);
+  }
+
+  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(wsProto + '//' + location.host + '/ws');
+
+  ws.onopen = () => document.getElementById('conn-status').textContent = 'online';
+  ws.onclose = () => document.getElementById('conn-status').textContent = 'offline';
+  ws.onerror = () => document.getElementById('conn-status').textContent = 'error';
+
+  ws.onmessage = async (evt) => {
+    const pkt = JSON.parse(evt.data);
+    packetCount++;
+
+    if (pkt.hasPos) {
+      stations[pkt.src] = pkt;
+      if (pkt.symbol) {
+        await ensureIcon(pkt.symbol);
+      }
+      updateStationSource();
+    }
+
+    addPacket(pkt);
+    updateSidebar();
+    if (packetsVisible) scrollToLatest();
+  };
+
+  setInterval(purgeStale, 30000);
+}
+
+function buildVectorStyle(pmtilesUrl, baseUrl) {
+  return {
+    version: 8,
+    glyphs: baseUrl + '/fonts/{fontstack}/{range}.pbf',
+    sprite: baseUrl + '/sprites/v4/light',
+    sources: {
+      protomaps: {
+        type: 'vector',
+        url: pmtilesUrl,
+        attribution: '<a href="https://protomaps.com">Protomaps</a> &copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a>'
+      }
+    },
+    layers: basemaps.layers('protomaps', basemaps.namedFlavor('light'), {lang: 'fr'})
+  };
+}
+
+function buildRasterStyle() {
+  return {
+    version: 8,
+    sources: {
+      osm: {
+        type: 'raster',
+        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        maxzoom: 19
+      }
+    },
+    layers: [
+      { id: 'osm-tiles', type: 'raster', source: 'osm',
+        paint: { 'raster-opacity': 1 } }
+    ]
+  };
+}
+
+init().catch(err => {
+  console.error('Init error:', err);
+  document.getElementById('conn-status').textContent = 'init error';
+});
+</script>
+</body>
+</html>
